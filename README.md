@@ -67,7 +67,7 @@ A browser tab with the Pluto welcome page should open (if it does not, copy the 
 ## Content of this repository
 
 - `01_or_for_stochastic_tail_assignment.pdf`: slides for part 1 of the workshop.
-- `02_or_notebook.jl`: Pluto notebook for part 1 of the workshop.
+- `02_practice_session_1_stochastic_or.jl`: Pluto notebook for part 1 of the workshop.
 - `03_decision_focused_learning.pdf`: slides for part 2 of the workshop.
 - `04_dfl_demo_knapsack.jl`: Pluto notebook for the live demo in part 2 of the workshop.
-- `05_decision_focused_learning_notebook.jl`: Pluto notebook for part 2 of the workshop.
+- `05_practice_session_2_dfl.jl`: Pluto notebook for part 2 of the workshop.
