@@ -1,0 +1,32 @@
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+DecisionFocusedLearningAlgorithms = "46d52364-bc3b-4fac-a992-eb1d3ef2de15"
+DecisionFocusedLearningBenchmarks = "2fbe496a-299b-4c81-bab5-c44dfc55cf20"
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+InferOpt = "4846b161-c94e-4150-8dac-c7ae193c601f"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+PlutoTeachingTools = "661c6b06-c737-4d37-b85c-46df65de6f69"
+PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+ProgressLogging = "33c8b6b6-d38a-422a-b730-caa89a2f386c"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StochasticTailAssignment = "f98393d4-ceb2-514e-aa5c-fd95c10ddeba"
+WGLMakie = "276b4fcb-3e11-5398-bf8b-a0c2d153d008"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[sources]
+StochasticTailAssignment = {rev = "b197f652cd6c44bcaf9a73297eda05cde5b5664a", url = "https://github.com/BatyLeo/StochasticTailAssignment.jl"}
+
+[compat]
+CairoMakie = "0.15"
+DecisionFocusedLearningAlgorithms = "0.2"
+DecisionFocusedLearningBenchmarks = "0.6"
+Flux = "0.16"
+InferOpt = "0.7"
+JLD2 = "0.6"
+PlutoTeachingTools = "0.4"
+PlutoUI = "0.7"
+ProgressLogging = "0.1"
+StochasticTailAssignment = "0.1"
+Zygote = "0.7"
