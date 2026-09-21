@@ -45,11 +45,15 @@ begin
     # using CairoMakie
 end
 
+# ╔═╡ 70782f52-da3a-40c1-a190-0951f2acc2e6
+ChooseDisplayMode()
+
+# ╔═╡ ebaaf352-a190-4015-a413-1f9d0e0ba562
+TableOfContents(; depth = 3)
+
 # ╔═╡ 3e1088c9-3990-4947-a8dd-cc7bd1e0d374
 md"""
-# Practice session 2: a decision-focused learning policy
-
-$(PlutoUI.TableOfContents(; depth=2))
+# Practice session 2: building a Decision-Focused Learning policy
 """
 
 # ╔═╡ 7dae61cc-9ce2-4319-96ca-1b91fce6c752
@@ -60,12 +64,30 @@ tip(
      "Training will use them."),
 )
 
-# ╔═╡ 564cb970-9ec4-4a8e-9f2f-7df7d71547d0
+# ╔═╡ 2cfa9472-6f74-4cf6-bf11-db48bd6897af
+md"""
+This session builds a decision-focused learning policy on top of [StochasticTailAssignment.jl](https://github.com/BatyLeo/StochasticTailAssignment.jl) from practice session 1.
+[InferOpt.jl](https://github.com/JuliaDecisionFocusedLearning/InferOpt.jl) provides the perturbed maximizer and the Fenchel-Young loss.
+[DecisionFocusedLearningBenchmarks.jl](https://github.com/JuliaDecisionFocusedLearning/DecisionFocusedLearningBenchmarks.jl) provides the benchmark interface.
+[DecisionFocusedLearningAlgorithms.jl](https://github.com/JuliaDecisionFocusedLearning/DecisionFocusedLearningAlgorithms.jl) provides the training loop.
+The three scaffolded exercises below are the only Julia you write.
+"""
 
+# ╔═╡ 5627d991-8700-48d9-a920-15e517303424
+md"""
+Three short exercises below need real Julia, the constructs they use appear elsewhere in this notebook too.
+
+- `(; a, b)` builds a **NamedTuple**, `(; a=1, b=2)` names the fields explicitly.
+- `reshape(v, 1, :)` turns a vector into a 1-row matrix, without copying.
+- `reduce(vcat, (f(x) for x in xs))` stacks a generator's rows into one matrix.
+- `DataSample(sample; x=..., y=..., extra=(; ...))` copies a sample and overrides only the given fields.
+- `v[1:n]` slices the first `n` entries of a vector.
+- A dot before an operator means **broadcasting**, `count(abs.(a .- b) .< 0.5)` counts how many entries are close.
+"""
 
 # ╔═╡ 8e38e69f-579b-4969-9f88-47fd28705c2e
 md"""
-## Introduction
+## 1. Summary of the part 2 slides
 ### Differentiating through an optimization layer
 
 A tiny two-dimensional example before the real problem: a polygon instead of a schedule graph, one cost vector θ instead of one per arc.
@@ -89,7 +111,7 @@ Toy maximizer: the polygon vertex farthest in the direction of θ, `argmax_{y in
 toy_maximizer(θ; vertices=TOY_VERTICES, kwargs...) = vertices[argmax(dot(θ, v) for v in vertices)]
 
 # ╔═╡ faeda526-988b-433d-8281-fd4ae577d835
-md_angle = md"direction angle: $(@bind toy_angle PlutoUI.Slider(0:0.01:6.28; default=0.7, show_value=true))"
+md_angle = md"direction angle: $(@bind toy_angle PlutoUI.Slider(0:0.02:6.28; default=0.7, show_value=true))"
 
 # ╔═╡ d99a713c-8f04-4098-afec-faf2967435da
 toy_θ = [cos(toy_angle), sin(toy_angle)]
@@ -111,7 +133,7 @@ md"""
 
 perturbation scale ε: $(@bind toy_ε PlutoUI.Slider(0.05:0.05:1.0; default=0.3, show_value=true))
 
-number of perturbation samples: $(@bind toy_nb_samples PlutoUI.Slider(10:10:200; default=100, show_value=true))
+number of perturbation samples: $(@bind toy_nb_samples PlutoUI.Slider(10:10:200; default=50, show_value=true))
 """
 
 # ╔═╡ 30a483d8-733a-40e8-bcc3-384411cb2153
@@ -126,13 +148,15 @@ md"""Dot area is how often that vertex wins across the perturbed draws, the oran
 
 # ╔═╡ d36172e6-bd2a-43eb-85c9-8a9e0cb79d4e
 let
+    # Fixed 30 samples here, independent of the sliders above, so this curve stays responsive.
+    curve_perturbed = PerturbedAdditive(toy_maximizer; nb_samples=30, ε=toy_ε, threaded=false, seed=0)
     fig = Figure(; size=(500, 320))
     ax = Axis(fig[1, 1]; xlabel="θ₁ (θ₂ fixed)", ylabel="cost", title="Piecewise constant vs smooth")
-    xs = range(-1.5, 1.5; length=200)
+    xs = range(-1.5, 1.5; length=60)
     target = TOY_VERTICES[3]
     toy_cost(y) = -dot(target, y)
     staircase = [toy_cost(toy_maximizer([x, toy_θ[2]])) for x in xs]
-    smooth = [toy_cost(mean(compute_probability_distribution(toy_perturbed, [x, toy_θ[2]]))) for x in xs]
+    smooth = [toy_cost(mean(compute_probability_distribution(curve_perturbed, [x, toy_θ[2]]))) for x in xs]
     lines!(ax, xs, staircase; label="through the maximizer", linewidth=2)
     lines!(ax, xs, smooth; label="through the perturbed layer", linewidth=2)
     axislegend(ax; position=:rb)
@@ -196,13 +220,14 @@ md"""
 ### From features to a routing decision
 
 Three steps: a 23-number feature vector per interior arc, a small neural network predicting one arc cost θ, and a deterministic edge MIP maximizing θᵀy to pick one path per aircraft.
-`generate_context` below leaves `x` as `nothing`, the target policy fills it once the K SAA scenarios exist (Section 4), from those same scenarios, so label and features always describe the same frozen delay draw.
+Interior arcs are the arcs between two legs, the artificial source and sink arcs that start and end every route are excluded.
+`generate_context` below leaves `x` as `nothing`, the expert fills it once the K SAA scenarios exist (Section 2.4), from those same scenarios, so label and features always describe the same frozen delay draw.
 """
 
 # ╔═╡ 4aedb21d-9dde-461d-965e-a4b517ffec8d
 keyconcept(
     "What is still solved at prediction time",
-    md"The surrogate replaces the expert's *search*, not the solver: a deterministic edge MIP still runs every prediction, now on learned costs θ instead of stochastic column generation and diving.",
+    md"The learned policy replaces the expert's *search*, not the solver: a deterministic edge MIP still runs every prediction, now on learned costs θ instead of stochastic column generation and diving.",
 )
 
 # ╔═╡ 2b6a3712-9928-4bdf-9a6f-8c11dbd597a0
@@ -221,21 +246,21 @@ keyconcept(
 
 # ╔═╡ 1a812d10-7702-49c8-ac98-360ff4ffb7e3
 md"""
-### The Fenchel-Young loss
+### The Fenchel-Young loss on the routing problem
 
 Same loss as the contour figure above, now with θ the predicted arc costs and ȳ the expert's arc selection instead of a fixed target vertex.
-Its gradient has the same clean form, $\nabla_\theta \mathcal{L}^{\mathrm{FYL}} = \hat y(\theta) - \bar y$, the surrogate's own perturbed arc selection minus the expert's.
+Its gradient has the same clean form, $\nabla_\theta \mathcal{L}^{\mathrm{FYL}} = \hat y(\theta) - \bar y$, the learned policy's own perturbed arc selection minus the expert's.
 """
 
 # ╔═╡ 52311ed7-a07b-45f8-93c8-a15e69548399
 keyconcept(
     "The Fenchel-Young gradient",
-    md"Push predicted costs toward the arcs the expert used, and away from the arcs the surrogate picked instead, one gradient step at a time.",
+    md"Push predicted costs toward the arcs the expert used, and away from the arcs the policy picked instead, one gradient step at a time.",
 )
 
 # ╔═╡ afab3069-b909-466f-8f3b-5eaeb20333fc
 md"""
-### SAA and joint labeling
+### Sample average approximation: one label from several scenarios
 
 The decision (one route per aircraft) must be made **before** delays are known, and be good on average, not tailored to one draw.
 So the expert labels one **sample average approximation** (SAA): K frozen delay scenarios, optimized jointly, one set of routes as the label for the whole instance.
@@ -249,9 +274,12 @@ aside(
 """,
 )
 
+# ╔═╡ 2adfcdd8-67d5-4d0b-a40c-ddde46bbcf00
+md"## 2. Building a decision-focused learning pipeline"
+
 # ╔═╡ 2ac77c30-f39b-4370-9868-88a207a1af0b
 md"""
-## 1. Define the benchmark type
+### 2.1 Define the benchmark type
 
 `DecisionFocusedLearningBenchmarks` needs five things: **instance**, **context** (features), **scenario**, **score** (a decision under a scenario), and **direction**, plus a **maximizer** and a **statistical model**.
 Delays do not depend on our decisions, so the benchmark is **exogenous**, `AbstractStochasticBenchmark{true}`.
@@ -333,7 +361,7 @@ function DFLB.generate_context(
     rng::Random.AbstractRNG,
     instance_sample::DataSample,
 )
-    # x stays `nothing` here, the target policy below fills it from the K SAA scenarios.
+    # x stays `nothing` here, the expert below fills it from the K SAA scenarios.
     return instance_sample
 end
 
@@ -355,6 +383,7 @@ question_box(
     md"""
 `y` is a binary arc-selection vector, `scenario` a `(; departure, arrival)` pair of root delay vectors.
 Write the cost of `y` under that scenario: sum the two components, decode the routes, evaluate with `full_cost`, which expects a scenarios-by-legs **matrix**, so reshape the single scenario into one row.
+`decode_routes_from_arc_solution` and `decode_arc_solution_from_routes` are StochasticTailAssignment.jl helpers converting between routes and the binary arc vector, inverses of each other.
 """,
 )
 
@@ -363,11 +392,10 @@ Write the cost of `y` under that scenario: sum the two components, decode the ro
 function DFLB.objective_value(
     bench::StochasticTailAssignmentBenchmark, sample::DataSample, y, scenario
 )
-    result = missing
     instance = sample.instance
     routes = decode_routes_from_arc_solution(y, instance)  # decode the arc selection into routes
     root_delays = scenario.departure .+ scenario.arrival  # combine the two delay components
-    result = missing  # TODO: full_cost(routes, reshape(root_delays, 1, :), instance; delay_cost_function=bench.delay_cost_function), reshape needed because full_cost expects a scenarios-by-legs matrix
+    result = missing  # TODO: call full_cost as in the diving cell of practice session 1, with the single scenario reshaped to a one-row matrix
     return result
 end
 
@@ -399,14 +427,14 @@ instance_sample = DFLB.generate_instance(bench, Xoshiro(67))
 sample = DFLB.generate_context(bench, Xoshiro(67), instance_sample)
 
 # ╔═╡ e458661a-de1d-4052-9bb4-dc1a1cdde506
-sample.x  # nothing: no scenario has been drawn yet, see Section 4
+sample.x  # nothing: no scenario has been drawn yet, see Section 2.4
 
 # ╔═╡ f46495af-e2ba-477e-999f-e136ea860779
 ξ = DFLB.generate_scenario(bench, Xoshiro(67); sample.context...)
 
 # ╔═╡ a454f17b-b84f-4993-9ec6-b8f9cd2cb2f6
 md"""
-## 2. The optimization oracle
+### 2.2 The optimization oracle
 
 The oracle is the edge-based MIP from part 1's package: given θ per connection, pick one path per aircraft maximizing θᵀy.
 The graph also has source and sink arcs with no prediction, so `LinearMaximizer`'s `g` slices the decision down to interior arcs before it meets θ.
@@ -438,7 +466,7 @@ maximizer = DFLB.generate_maximizer(bench)
 
 # ╔═╡ 95f7c78d-302d-4f43-b582-47870a1d027e
 md"""
-## 3. The statistical model
+### 2.3 The statistical model
 
 One small feedforward network, shared by every connection, maps its 23 features to a score.
 A single call `model(x)` scores every connection at once, `x` a 23 by (connections) matrix.
@@ -460,7 +488,7 @@ initial_model = DFLB.generate_statistical_model(bench; seed=67)
 
 # ╔═╡ a8203ace-eeef-4861-9516-f66c3fff40a2
 # a one-scenario preview of the feature matrix shape, using the single demo scenario ξ
-# above, exactly the same compute_features/scale_features pair the target policy uses
+# above, exactly the same compute_features/scale_features pair the expert uses
 # below on the K frozen SAA scenarios.
 θ_demo = let
     x_demo = scale_features(
@@ -489,10 +517,10 @@ end
 
 # ╔═╡ d7a27f14-bd9c-4012-b6ea-e926ac2936d3
 md"""
-## 4. The expert: sample average approximation
+### 2.4 The expert: sample average approximation
 
-`SampleAverageApproximation(bench, K)` freezes K scenarios per instance and hands them to a **target policy**, the function that labels the instance.
-Our target policy is part 1's solver: column generation over the K scenarios, then diving.
+`SampleAverageApproximation(bench, K)` freezes K scenarios per instance and hands them to the expert, the routine that labels the instance (the benchmark API calls this argument `target_policy`).
+The expert here is practice session 1's solver: column generation then diving.
 """
 
 # ╔═╡ 28e465ca-a503-4806-9043-3d3d5b7591d3
@@ -501,16 +529,18 @@ saa = SampleAverageApproximation(bench, bench.nb_scenarios)
 # ╔═╡ 1d2fde83-9469-4cee-a74e-3c1040998546
 question_box(
     md"""
-Signature `(ctx_sample, scenarios) -> Vector{DataSample}`, one label per instance from all K scenarios together.
-Stack `departure` and `arrival` into two K by L matrices, sum them, call `sta_expert_routes` (chains warm start, column generation, diving), decode the routes with `decode_arc_solution_from_routes`, return a labeled copy of the sample.
+Two blanks. First, build `root_delays`: stack each scenario's departure vector into a K by L matrix (one row per scenario), do the same for arrival, and add the two matrices.
+Second, build `labeled`: the labeled `DataSample` this function returns, from `ctx_sample`, `y`, `scale_features(x_raw)`, and an `extra` NamedTuple, the same shape as the demo notebook's `DataSample(sample; x=..., y=..., extra=(; ...))` call.
 If `sta_expert_routes` returns `nothing`, return `DataSample[]` instead.
-Recompute `x` from the same stacked matrices with `compute_features` and `scale_features`, and keep the routes, `x_raw`, and the wall-clock time in `extra`.
 """,
 )
 
 # ╔═╡ 191fa21a-4937-451d-94f6-ab3590f145ce
 hint(
-    md"`reduce(vcat, (reshape(ξ.departure, 1, :) for ξ in scenarios))` stacks the K departure vectors into a K by L matrix, do the same for `arrival`, then sum the two matrices.",
+    md"""
+The cheat sheet's `reduce(vcat, (reshape(v, 1, :) for v in xs))` line builds `root_delays`: stack the K `ξ.departure` vectors into a K by L matrix, do the same for `ξ.arrival`, then add the two matrices.
+For `labeled`, follow the demo notebook's `DataSample(sample; x=..., y=..., extra=(; ...))` pattern, keeping `ctx_sample`'s existing `extra` fields via `ctx_sample.extra...`.
+""",
 )
 
 
@@ -529,7 +559,7 @@ function expert_target_policy(ctx_sample::DataSample, scenarios::AbstractVector)
     routes === nothing && return DataSample[]
     y = decode_arc_solution_from_routes(routes, instance)
     x_raw = compute_features(instance, departure_root_delays, arrival_root_delays)
-    return [
+    labeled = [
         DataSample(
             ctx_sample;
             x=scale_features(x_raw),
@@ -537,6 +567,7 @@ function expert_target_policy(ctx_sample::DataSample, scenarios::AbstractVector)
             extra=(; ctx_sample.extra..., x_raw, scenarios, routes, expert_seconds=timed.time),
         ),
     ]
+    return labeled
 end
 ```
 `DataSample(sample; x, y, extra=(; sample.extra..., k=v))` copies a sample and overrides only the given fields.
@@ -545,7 +576,7 @@ end
 
 # ╔═╡ b6a7faeb-6dd8-4232-a773-070c2276da80
 md"""
-## 5. The training set: practice session 1's dataset
+### 2.5 The training set: practice session 1's dataset
 
 Part 1 saved about 30 solved instances to `data/practice_session_1_dataset.jld2`, the expert runs once offline, its output is a file.
 Each entry becomes one `DataSample`: features, label, and the K delay scenarios kept in `extra`.
@@ -559,7 +590,7 @@ md"""load the training set: $(@bind train_data_click PlutoUI.CounterButton("Load
 Markdown.parse(
     isfile(joinpath(@__DIR__, "data", "practice_session_1_dataset.jld2")) ?
     "Expected runtime: well under a second, reading `data/practice_session_1_dataset.jld2` back from disk." :
-    "Expected runtime: about a minute, `data/practice_session_1_dataset.jld2` was not found so this button falls back to solving 30 fresh instances through the benchmark's own expert target policy.",
+    "Expected runtime: about a minute, `data/practice_session_1_dataset.jld2` was not found so this button falls back to solving 30 fresh instances through the benchmark's own expert.",
 )
 
 # ╔═╡ fd1a924b-2305-4421-92d3-a39c50608e10
@@ -580,10 +611,10 @@ end
 
 # ╔═╡ 3bfc7519-2824-40bc-a780-c4a25ff0aace
 md"""
-## 6. A fresh test set
+### 2.6 A fresh test set
 
-Eight instances the surrogate never trains on, labeled by the same expert, every number below is measured on this set.
-Eight is a compromise between noise (Section 8 shows per-instance spread) and the button's runtime.
+Eight instances the learned policy never trains on, labeled by the same expert, every number below is measured on this set.
+Eight is a compromise between noise (Section 3.1 shows per-instance spread) and the button's runtime.
 """
 
 # ╔═╡ 3932b390-2f88-4678-8be0-418a03b73134
@@ -609,7 +640,7 @@ end
 
 # ╔═╡ 03a6b02b-787e-4614-88bd-960eb900c8f7
 begin
-    # n and seed are fixed, not chosen to make the reported gap look good, see Section 8.
+    # n and seed are fixed, not chosen to make the reported gap look good, see Section 3.1.
     test_current_request = (n=8, seed=90_000)
     if test_click > test_request_cache[].click
         test_request_cache[] = (click=test_click, request=test_current_request)
@@ -619,16 +650,16 @@ end
 
 # ╔═╡ 226419ca-751b-4d03-b0fe-30a96040cea4
 md"""
-## 7. Train the policy
+### 2.7 Train the policy
 
 `DFLPolicy` bundles the network with the oracle, `PerturbedFenchelYoungLossImitation` perturbs, averages, and pushes the prediction toward the expert.
 `train_policy!` evaluates the validation metric at every epoch, including epoch 0: the **in-sample** SAA gap against the fresh test set.
-Training does not restart automatically, regenerate the test set then press "Train the surrogate" again.
+Training does not restart automatically, regenerate the test set then press "Train the policy" again.
 """
 
 # ╔═╡ 876c9a36-5afc-4ea4-8632-f4d565690158
 warning_box(
-    md"This in-sample gap differs from Section 9's **out-of-sample** gap, which re-scores on delay draws neither side has seen.",
+    md"This in-sample gap differs from Section 3.2's **out-of-sample** gap, which re-scores on delay draws neither side has seen.",
 )
 
 # ╔═╡ e8fdce16-5fc7-4893-b29f-29e709aeeb11
@@ -637,7 +668,7 @@ training epochs: $(@bind session2_epochs PlutoUI.Slider(5:5:30; default=20, show
 
 perturbed samples per gradient step: $(@bind session2_nb_samples PlutoUI.Slider(2:1:10; default=5, show_value=true))
 
-train the surrogate: $(@bind train_click PlutoUI.CounterButton("Train the surrogate"))
+train the policy: $(@bind train_click PlutoUI.CounterButton("Train the policy"))
 """
 
 # ╔═╡ 1ef9812b-6b96-4bbd-a947-6b28793c8e12
@@ -649,11 +680,14 @@ begin
     train_result_cache = Ref{Any}((click=0, request=nothing, result=nothing))
 end
 
+# ╔═╡ c6affb5d-1e0c-4faa-b23f-c926f7e40124
+md"## 3. Evaluating the learned policy"
+
 # ╔═╡ 04a46f0d-62e0-46bf-884d-abbf02280113
 md"""
-## 8. Results
+### 3.1 Results
 
-The deterministic baseline (no stochasticity) sits well above the surrogate, that gap is what decision-focused learning chases.
+The deterministic baseline (no stochasticity) sits well above the policy, that gap is what decision-focused learning chases.
 Every full cost gap here is the mean of each instance's own relative gap, `DecisionFocusedLearningBenchmarks.compute_gap`'s convention.
 """
 
@@ -664,52 +698,22 @@ warning_box(
 
 # ╔═╡ 251fdd64-1fc9-42f4-8e63-f0595e48af7a
 md"""
-### Per-instance gap
+#### Per-instance gap
 
-A single mean hides how the surrogate performs, one bad instance can move it.
+A single mean hides how the policy performs, one bad instance can move it.
 The table below breaks the same gap down instance by instance, read the median and the spread.
 """
 
-# ╔═╡ 8eda63fe-701b-4b22-8d07-05bd9dadea74
-question_box(
-    md"""
-The table above has everything you need: expert time, surrogate time, gap (`session2_table.full_cost_gap_percent[2]`, in percent).
-Compute the speedup ratio and pass the gap through unchanged.
-""",
-)
-
-# ╔═╡ 994d7f21-3472-4a31-9ad8-5b77ac17e77f
-"Return `(; speedup, full_cost_gap_percent)` from `expert_time`, `surrogate_time` and `full_cost_gap_percent`."
-function speedup_and_gap(expert_time, surrogate_time, full_cost_gap_percent)
-    result = missing
-    speedup = missing  # TODO: expert_time / surrogate_time
-    result = ismissing(speedup) ? missing : (; speedup, full_cost_gap_percent)
-    return result
-end
-
-# ╔═╡ 9245bd07-4761-49ed-8ec2-01f05bc61927
-Foldable(
-    "Full solution",
-    md"""
-```julia
-function speedup_and_gap(expert_time, surrogate_time, full_cost_gap_percent)
-    return (; speedup=expert_time / surrogate_time, full_cost_gap_percent)
-end
-```
-`(; a=1, b=2)` builds a NamedTuple with named fields, useful here to return both numbers from one function.
-""",
-)
-
 # ╔═╡ ef411983-077d-4842-ab70-d5f1810e40ee
 md"""
-## 9. Out-of-sample evaluation
+### 3.2 Out-of-sample evaluation
 
-Section 8's gap is **in-sample**, favorable to the expert, scored on the scenarios its features were built from.
+Section 3.1's gap is **in-sample**, favorable to the expert, scored on the scenarios its features were built from.
 This section re-scores both already-fixed decisions on 30 **fresh** scenarios neither side has seen, the fair, decision-quality number.
 """
 
 # ╔═╡ 1a23c62b-3f4b-4c06-b933-d5c1a2b899cc
-"Score expert and surrogate decisions on `nb_scenarios` fresh draws, return average costs and the surrogate's gap."
+"Score expert and policy decisions on `nb_scenarios` fresh draws, return average costs and the policy's gap."
 function out_of_sample_gap(sample::DataSample, policy::DFLPolicy; nb_scenarios=30, seed)
     fresh = [
         DFLB.generate_scenario(bench, Xoshiro(seed + k); sample.context...) for
@@ -717,43 +721,44 @@ function out_of_sample_gap(sample::DataSample, policy::DFLPolicy; nb_scenarios=3
     ]
     ŷ = policy(sample.x; sample.context...)
     expert_cost = mean(DFLB.objective_value(bench, sample, sample.y, ξ) for ξ in fresh)
-    surrogate_cost = mean(DFLB.objective_value(bench, sample, ŷ, ξ) for ξ in fresh)
+    policy_cost = mean(DFLB.objective_value(bench, sample, ŷ, ξ) for ξ in fresh)
     return (;
-        expert_cost, surrogate_cost, gap_percent=100 * (surrogate_cost - expert_cost) / abs(expert_cost)
+        expert_cost, policy_cost, gap_percent=100 * (policy_cost - expert_cost) / abs(expert_cost)
     )
 end
 
+# ╔═╡ 1ff34be6-d12b-4d07-b05e-aedf3c70e646
+md"### 3.3 Inspecting the features of one instance"
+
 # ╔═╡ 92d0c429-a893-4688-a3d5-0f4c2be188ab
 md"""
-## 11. Expert vs surrogate routes
+### 3.4 Expert routes vs policy routes
 
-`plot_gantt` compares each aircraft's rotation, expert routes on top, surrogate routes below, for the inspection instance.
+`plot_gantt` compares each aircraft's rotation, expert routes on top, the learned policy's routes below, for the inspection instance.
 """
 
 # ╔═╡ 60711b0e-a34c-40bb-8031-6f06628ac011
 md"""
-## 12. Arc selection agreement
+### 3.5 Do the policy and the expert choose the same arcs?
 
-θ is the surrogate's predicted cost per interior arc, ŷ the decoded selection, ȳ the expert's, both binary, one entry per interior arc.
+θ is the learned policy's predicted cost per interior arc, ŷ the decoded selection, ȳ the expert's, both binary, one entry per interior arc.
 """
 
 # ╔═╡ f2c131f5-f56d-4a08-b4a0-fc02dc150b94
 question_box(
     md"""
-Predict θ, decode it into ŷ with the shared maximizer, compute the fraction of arcs where ŷ agrees with ȳ.
+θ is already predicted (it is an argument to this function), decode it into ŷ with the shared maximizer, and compute the fraction of interior arcs where ŷ agrees with the expert's ȳ.
 `maximizer(θ; instance)` also covers source and sink arcs, slice its output down to `1:instance.nb_interior_arcs` first.
 """,
 )
 
 # ╔═╡ 193a7467-1002-431c-9d8c-f994e47eb635
-"Decode θ into ŷ and compare with ȳ, return `(; ŷ, agreement)`."
-function surrogate_agreement(θ, ȳ, maximizer, instance)
-    result = missing
+"Decode θ into ŷ and compare with ȳ, return `(; ŷ, match_rate)`."
+function arc_match_rate(θ, ȳ, maximizer, instance)
     ŷ_full = maximizer(θ; instance)  # one entry per arc, including source and sink
     ŷ = ŷ_full[1:(instance.nb_interior_arcs)]  # slice down to interior arcs, matching ȳ
-    ȳ_interior = ȳ[1:(instance.nb_interior_arcs)]
-    agreement = missing  # TODO: count(abs.(ŷ .- ȳ_interior) .< 0.5) / length(ȳ_interior)
-    result = ismissing(agreement) ? missing : (; ŷ, agreement)
+    match_rate = missing  # TODO: fraction of interior arcs where ŷ and ȳ_interior agree, see the cheat sheet at the top
+    result = ismissing(match_rate) ? missing : (; ŷ, match_rate)
     return result
 end
 
@@ -762,17 +767,20 @@ Foldable(
     "Full solution",
     md"""
 ```julia
-function surrogate_agreement(θ, ȳ, maximizer, instance)
+function arc_match_rate(θ, ȳ, maximizer, instance)
     ŷ_full = maximizer(θ; instance)
     ŷ = ŷ_full[1:(instance.nb_interior_arcs)]
     ȳ_interior = ȳ[1:(instance.nb_interior_arcs)]
-    agreement = count(abs.(ŷ .- ȳ_interior) .< 0.5) / length(ȳ_interior)
-    return (; ŷ, agreement)
+    match_rate = count(abs.(ŷ .- ȳ_interior) .< 0.5) / length(ȳ_interior)
+    return (; ŷ, match_rate)
 end
 ```
 `maximizer(θ; instance)` takes θ positionally and the instance as a keyword, `LinearMaximizer` forwards both straight to `sta_edge_maximizer`.
 """,
 )
+
+# ╔═╡ 908083ff-fbad-42f2-ba21-6d39b6a0109f
+md"### 3.6 Map decision-focused learning to your own problem"
 
 # ╔═╡ 8d6ddc95-d241-4e08-8d1c-d4ba38abff8b
 md"""
@@ -902,11 +910,11 @@ end
 
 # ╔═╡ 04238620-69cf-42ab-8965-4f286b0d1c45
 """
-Decode the surrogate route for one test sample: run the policy (statistical model then
+Decode the route for one test sample: run the policy (statistical model then
 maximizer) on its features and context, and decode the resulting arc selection back into
 routes for `sample.instance`.
 """
-function surrogate_routes_for(sample::DataSample, policy::DFLPolicy)
+function policy_routes_for(sample::DataSample, policy::DFLPolicy)
     ŷ = policy(sample.x; sample.context...)
     return decode_routes_from_arc_solution(ŷ, sample.instance)
 end
@@ -933,10 +941,10 @@ end
 Average full cost of the routes `policy` decodes for each sample of `data`, evaluated on
 that sample's own SAA scenarios.
 """
-function average_surrogate_full_cost(data, policy::DFLPolicy)
+function average_policy_full_cost(data, policy::DFLPolicy)
     return mean(
         full_cost(
-            surrogate_routes_for(s, policy),
+            policy_routes_for(s, policy),
             reduce(vcat, (reshape(ξ.departure .+ ξ.arrival, 1, :) for ξ in s.extra.scenarios)),
             s.instance;
             delay_cost_function=bench.delay_cost_function,
@@ -986,16 +994,16 @@ end
 # ╔═╡ a8cdcca5-b5b8-4b69-8c7a-4e9542fbd1b8
 """
 Compute the in-sample SAA gap of `policy`'s current weights for each sample of `data`
-separately, returning a `NamedTuple` of three vectors (`expert_cost`, `surrogate_cost`,
+separately, returning a `NamedTuple` of three vectors (`expert_cost`, `policy_cost`,
 `gap_percent`), one entry per sample, in the same order as `data`. Powers the per-instance
-breakdown table in Section 8, `DFLB.compute_gap` only returns the mean over `data`.
-Returns `nothing` instead if `DFLB.objective_value` (Section 1's exercise) is still
+breakdown table in Section 3.1, `DFLB.compute_gap` only returns the mean over `data`.
+Returns `nothing` instead if `DFLB.objective_value` (Section 2.1's exercise) is still
 unimplemented and yields `missing`, so a caller can show a status line instead of a
 `MethodError` from pushing `missing` into a `Vector{Float64}`.
 """
 function per_instance_gaps(data, policy::DFLPolicy)
     expert_cost = Float64[]
-    surrogate_cost = Float64[]
+    policy_cost = Float64[]
     gap_percent = Float64[]
     for s in data
         target_obj = DFLB.objective_value(saa, s)
@@ -1005,10 +1013,10 @@ function per_instance_gaps(data, policy::DFLPolicy)
         obj = DFLB.objective_value(saa, s, y)
         ismissing(obj) && return nothing
         push!(expert_cost, target_obj)
-        push!(surrogate_cost, obj)
+        push!(policy_cost, obj)
         push!(gap_percent, 100 * (obj - target_obj) / abs(target_obj))
     end
-    return (; expert_cost, surrogate_cost, gap_percent)
+    return (; expert_cost, policy_cost, gap_percent)
 end
 
 # ╔═╡ 6c62cf45-7165-48ab-a483-bb14a1c025e3
@@ -1038,23 +1046,23 @@ end
 
 # ╔═╡ 3ae0e8f2-3b0e-4e6a-9d8e-3f0a5b9c6d21
 """
-Plot a grouped bar chart comparing the expert's `ȳ` and the surrogate's `ŷ` (both binary
-arc-selection vectors, one entry per interior arc) for the first `limit` arcs, so agreement
-and disagreement are readable arc by arc.
+Plot a grouped bar chart comparing the expert's `ȳ` and the policy's `ŷ` (both binary
+arc-selection vectors, one entry per interior arc) for the first `limit` arcs, so matches
+and mismatches are readable arc by arc.
 """
-function plot_binary_agreement(ȳ, ŷ; limit=40, title="")
+function plot_arc_match(ȳ, ŷ; limit=40, title="")
     n = min(limit, length(ȳ))
     fig = Figure(; size=(900, 260))
     ax = Axis(
         fig[1, 1];
         xlabel="Interior arc index (first $n arcs)",
-        ylabel="Selected",
+        ylabel="arc chosen",
         title=title,
         yticks=([0, 1], ["0", "1"]),
     )
     xs = 1:n
     barplot!(ax, xs .- 0.15, Float64.(ȳ[1:n]); width=0.3, label="expert ȳ")
-    barplot!(ax, xs .+ 0.15, Float64.(ŷ[1:n]); width=0.3, label="surrogate ŷ")
+    barplot!(ax, xs .+ 0.15, Float64.(ŷ[1:n]); width=0.3, label="policy ŷ")
     axislegend(ax; position=:rt)
     return fig
 end
@@ -1142,32 +1150,21 @@ function sta_expert_routes(schedule, root_delays, delay_cost_function)
 end
 
 # ╔═╡ 3ba180e4-734d-4b61-827f-85034801eed2
-"Target policy: label one instance from all K SAA `scenarios` at once, or return `DataSample[]` if unlabelable."
+"Expert: label one instance from all K SAA `scenarios` at once, or return `DataSample[]` if unlabelable."
 function expert_target_policy(ctx_sample::DataSample, scenarios::AbstractVector)
-    result = DataSample[]
     instance = ctx_sample.instance
-    departure_root_delays = reduce(vcat, (reshape(ξ.departure, 1, :) for ξ in scenarios))  # stack into a K by L matrix
-    arrival_root_delays = reduce(vcat, (reshape(ξ.arrival, 1, :) for ξ in scenarios))
-    root_delays = departure_root_delays .+ arrival_root_delays  # combine into one root delay matrix
+    departure_root_delays = missing
+    arrival_root_delays = missing
+    root_delays = missing  # TODO: stack the departure delays of all scenarios into one matrix (one row per scenario), same for arrivals, and add the two matrices
+    ismissing(root_delays) && return DataSample[]
     timed = @timed sta_expert_routes(instance, root_delays, bench.delay_cost_function)
     routes = timed.value
-    if routes !== nothing
-        y = missing  # TODO: decode_arc_solution_from_routes(routes, instance)
-        x_raw = missing  # TODO: compute_features(instance, departure_root_delays, arrival_root_delays)
-        if !ismissing(y) && !ismissing(x_raw)
-            result = [
-                DataSample(
-                    ctx_sample;
-                    x=scale_features(x_raw),
-                    y,
-                    extra=(;
-                        ctx_sample.extra..., x_raw, scenarios, routes, expert_seconds=timed.time
-                    ),
-                ),
-            ]
-        end
-    end
-    return result
+    routes === nothing && return DataSample[]
+    y = decode_arc_solution_from_routes(routes, instance)
+    x_raw = compute_features(instance, departure_root_delays, arrival_root_delays)
+    labeled = missing  # TODO: build the labeled copy of sample with x, y and extra (routes, x_raw, wall-clock time), same shape as the demo notebook
+    ismissing(labeled) && return DataSample[]
+    return labeled
 end
 
 # ╔═╡ 515483da-d3d8-40bd-baaa-a84a9981a91f
@@ -1206,7 +1203,7 @@ train_data = train_data_bundle.data
 # ╔═╡ 5e319f13-f9f1-431a-a96e-cee2c76da149
 if train_data_bundle.status == :complete && isempty(train_data) &&
    train_data_bundle.nb_skipped > 0
-    still_missing(md"Every instance was skipped, implement `expert_target_policy` (Section 4).")
+    still_missing(md"Every instance was skipped, implement `expert_target_policy` (Section 2.4).")
 else
     Markdown.parse(
         train_data_bundle.status == :idle ?
@@ -1258,23 +1255,19 @@ test_data = test_bundle.data
 # The slider above is drawn before the test set exists and stays at 1:1:8 whatever the
 # actual test set size ends up being (unlabelable instances can make it smaller, see
 # `expert_target_policy`), so clamp it down to a valid index of `test_data` here, once, and
-# use `session2_idx` (not `session2_inspect_idx`) everywhere in sections 10 to 12.
+# use `session2_idx` (not `session2_inspect_idx`) everywhere in sections 3.3 to 3.5.
 session2_idx = isempty(test_data) ? 1 : clamp(session2_inspect_idx, 1, length(test_data))
 
 # ╔═╡ de459fab-2f3c-4c71-b830-536b3339ca40
 Markdown.parse(
-    """
-    ## 10. Feature inspection
-
-    Median slack quantile (minutes) across interior arcs of **test instance #$(session2_idx)**, sorted, tight connections near or below zero.
-    """,
+    "Median slack quantile (minutes) across interior arcs of **test instance #$(session2_idx)**, sorted, tight connections near or below zero.",
 )
 
 # ╔═╡ 002c6c80-8eb6-4dfd-8eb9-5941ff68f2fa
 gap_metric = FunctionMetric(:val_gap, test_data) do ctx, data
     isempty(data) && return NaN
     gap = DFLB.compute_gap(saa, data, ctx.policy.statistical_model, ctx.policy.maximizer)
-    # compute_gap yields `missing` while `objective_value` (Section 1's exercise) is still
+    # compute_gap yields `missing` while `objective_value` (Section 2.1's exercise) is still
     # unimplemented, NaN keeps the training loop and its Float64 history vectors working
     # instead of failing on a missing value.
     return ismissing(gap) ? NaN : 100 * gap
@@ -1283,12 +1276,12 @@ end
 # ╔═╡ 89f02fe9-be13-4c7d-9140-c00d724e083f
 begin
     # test_id is included so that a fresh button press after regenerating the test set
-    # (Section 6) is recognized as a genuinely new request, not accidentally matched
+    # (Section 2.6) is recognized as a genuinely new request, not accidentally matched
     # against a validation curve computed for the previous test set. `test_click` (the
     # counter itself) is a more robust identity than `objectid(test_data)`: it strictly
     # increases on every press and does not depend on object identity surviving Pluto's
     # distributed workspace boundary, `length(test_data)` is kept alongside it so a change
-    # in how many instances were labeled (Section 6's skip semantics) is also visible here.
+    # in how many instances were labeled (Section 2.6's skip semantics) is also visible here.
     test_id = (length(test_data), test_click)
     train_current_request = (
         epochs=session2_epochs, nb_samples=session2_nb_samples, nb_train=length(train_data), test_id
@@ -1306,6 +1299,12 @@ begin
     elseif train_result_cache[].request == train_request &&
            train_result_cache[].click == train_click
         train_result_cache[].result
+    elseif isempty(test_data)
+        train_no_test_set =
+            (; status=:no_test_set, policy=nothing, history=nothing, runtime=missing, error=nothing)
+        train_result_cache[] =
+            (click=train_click, request=train_request, result=train_no_test_set)
+        train_no_test_set
     elseif isempty(train_data)
         train_not_implemented =
             (; status=:not_implemented, policy=nothing, history=nothing, runtime=missing, error=nothing)
@@ -1316,7 +1315,7 @@ begin
         train_computed = try
             # deepcopy initial_model rather than calling generate_statistical_model a second
             # time, exactly the pattern the knapsack demo uses, so training always starts
-            # from the same seeded weights shown in Section 3 above.
+            # from the same seeded weights shown in Section 2.3 above.
             policy = DFLPolicy(deepcopy(initial_model), maximizer)
             algo = PerturbedFenchelYoungLossImitation(;
                 nb_samples=train_request.nb_samples, ε=0.01, threaded=true, seed=3
@@ -1338,9 +1337,11 @@ end
 # ╔═╡ 642963eb-6bb3-4c6e-a7f2-0dfcd228d12b
 Markdown.parse(
     train_bundle.status == :idle ?
-    "**Status: idle.** Press \"Train the surrogate\" above." :
+    "**Status: idle.** Press \"Train the policy\" above." :
+    train_bundle.status == :no_test_set ?
+    "**Status: skipped.** Training skipped: the fresh test set is empty, finish the expert policy exercise and generate the test set first." :
     train_bundle.status == :not_implemented ?
-    "**Status: waiting on data.** Load the training set (section 5) and make sure `expert_target_policy` above is implemented, then press the button again." :
+    "**Status: waiting on data.** Load the training set (section 2.5) and make sure `expert_target_policy` above is implemented, then press the button again." :
     train_bundle.status == :failed ?
     "**Status: failed.** " * train_bundle.error :
     "**Status: complete.** Trained for $(train_request.epochs) epoch(s) in " *
@@ -1348,7 +1349,7 @@ Markdown.parse(
 )
 
 # ╔═╡ 55a4c6de-0873-461f-a57f-16572782e7fa
-train_bundle.status != :complete ? md"*Train the surrogate above to see the loss and gap curves.*" :
+train_bundle.status != :complete ? md"*Train the policy above to see the loss and gap curves.*" :
 isempty(test_data) ? md"*Generate the fresh test set to get a validation curve.*" :
 let
     (epochs_logged, losses) = get(train_bundle.history, :training_loss)
@@ -1364,7 +1365,7 @@ let
     Markdown.parse(
         "In-sample validation gap: **$(round(gaps[1]; digits=2)) %** before training (epoch 0), " *
         "**$(round(gaps[end]; digits=2)) %** at the final epoch. " *
-        "This is the training-time metric (mean over the 8 test instances' own SAA scenarios), the out-of-sample number in Section 9 is the fair comparison. " *
+        "This is the training-time metric (mean over the 8 test instances' own SAA scenarios), the out-of-sample number in Section 3.2 is the fair comparison. " *
         "Every table below uses the final policy, not the best epoch, so this is the headline number to compare against them. " *
         "The fresh test set doubles as this training curve's monitoring set, a real project would hold out a separate validation set so early stopping does not leak information from the set used for the final reported numbers.",
     )
@@ -1372,7 +1373,7 @@ end
 
 # ╔═╡ f3abed9f-41bb-490f-a41a-78ec6bc936ea
 if test_bundle.status == :complete && isempty(test_data) && test_bundle.nb_skipped > 0
-    still_missing(md"Every instance was skipped, implement `expert_target_policy` (Section 4).")
+    still_missing(md"Every instance was skipped, implement `expert_target_policy` (Section 2.4).")
 else
     Markdown.parse(
         test_bundle.status == :idle ?
@@ -1400,19 +1401,19 @@ begin
         let
             expert_cost = average_expert_full_cost(test_data)
             expert_time = mean(s.extra.expert_seconds for s in test_data)
-            surrogate_cost = average_surrogate_full_cost(test_data, train_bundle.policy)
-            surrogate_time = mean(
+            policy_cost = average_policy_full_cost(test_data, train_bundle.policy)
+            policy_time = mean(
                 (@elapsed train_bundle.policy(s.x; s.context...)) for s in test_data
             )
             det = deterministic_baseline(test_data)
             (
                 method=[
                     "expert (stochastic OR, practice session 1)",
-                    "surrogate (DFL, this practice session)",
+                    "policy (DFL, this practice session)",
                     "deterministic (no stochasticity)",
                 ],
-                full_cost=[expert_cost, surrogate_cost, det.avg_cost],
-                runtime_seconds=[expert_time, surrogate_time, det.avg_time],
+                full_cost=[expert_cost, policy_cost, det.avg_cost],
+                runtime_seconds=[expert_time, policy_time, det.avg_time],
                 full_cost_gap_percent=[
                     0.0,
                     mean(session2_per_instance.gap_percent),
@@ -1426,9 +1427,9 @@ end
 # ╔═╡ 6d731846-a2c8-4126-b978-43f34086ae1a
 begin
     session2_table_md = if !session2_ready
-        "*Generate the fresh test set and train the surrogate above to fill in this table.*"
+        "*Generate the fresh test set and train the policy above to fill in this table.*"
     elseif session2_table === nothing
-        "*Status: waiting on the exercise.* Implement `objective_value` first (Section 1), the comparison table's gap column needs it."
+        "*Status: waiting on the exercise.* Implement `objective_value` first (Section 2.1), the comparison table's gap column needs it."
     else
         header = "| method | full cost | runtime | full cost gap |\n|---|---|---|---|"
         rows = join(
@@ -1448,42 +1449,37 @@ end
 # ╔═╡ 205b19d7-f4db-4d91-9e5f-8c3cd79c5f40
 session2_speedup =
     session2_table === nothing ? missing :
-    speedup_and_gap(
-        session2_table.runtime_seconds[1], session2_table.runtime_seconds[2], session2_table.full_cost_gap_percent[2]
+    (;
+        speedup=session2_table.runtime_seconds[1] / session2_table.runtime_seconds[2],
+        full_cost_gap_percent=session2_table.full_cost_gap_percent[2],
     )
 
 # ╔═╡ b815dc98-485c-4f00-96f6-a3675632b9d0
 Markdown.parse(
     """
-    ## 13. Map decision-focused learning to your own problem
-
-    Five questions to ask about a problem you actually work on, tied to the numbers you just produced above.
-
     1. **What is the decision?** Here, one route per aircraft, decoded from a binary arc selection.
        In your problem: whatever a deterministic solver already outputs.
-    2. **What is uncertain?** Here, delay scenarios, entering the surrogate as distributional slack features and entering the expert as the scenarios it optimizes over.
+    2. **What is uncertain?** Here, delay scenarios, entering the learned policy as distributional slack features and entering the expert as the scenarios it optimizes over.
        In your problem: whatever varies between the moment you decide and the moment the outcome is known.
-    3. **What is the downstream objective?** Here, the full cost gap in the table above$(session2_table === nothing ? "" : " ($(round(session2_table.full_cost_gap_percent[2]; digits=1)) % for the surrogate versus $(round(session2_table.full_cost_gap_percent[3]; digits=1)) % for a deterministic baseline)").
+    3. **What is the downstream objective?** Here, the full cost gap in the table above$(session2_table === nothing ? "" : " ($(round(session2_table.full_cost_gap_percent[2]; digits=1)) % for the policy versus $(round(session2_table.full_cost_gap_percent[3]; digits=1)) % for a deterministic baseline)").
        In your problem: whatever a domain expert would use to judge a decision, not a proxy metric.
     4. **Is there already a solver whose parameters could be learned?** Here, the deterministic edge MIP, unchanged, only its cost coefficients θ are learned$(session2_speedup === missing ? "" : ", giving a $(round(session2_speedup.speedup; digits=1))x speedup over the expert in the table above").
        In your problem: look for a fast deterministic solver next to a slow, high-quality one, DFL turns the slow one's decisions into training labels for the fast one's cost coefficients.
-    5. **What would your dataset file look like?** Here, `data/practice_session_1_dataset.jld2`: one row per instance, holding whatever a fresh instance needs to be regenerated plus the expert's routes.
-       In your problem: whatever a from-scratch benchmark's `generate_instance` needs, plus the label your `target_policy` would have produced.
     """,
 )
 
 # ╔═╡ 0ce675f0-34d1-4b6b-8520-8b3e8373fb63
 begin
     session2_per_instance_md = if !session2_ready
-        "*Generate the fresh test set and train the surrogate above to fill in this table.*"
+        "*Generate the fresh test set and train the policy above to fill in this table.*"
     elseif session2_per_instance === nothing
-        "*Status: waiting on the exercise.* Implement `objective_value` first (Section 1), the per-instance gap needs it."
+        "*Status: waiting on the exercise.* Implement `objective_value` first (Section 2.1), the per-instance gap needs it."
     else
-        pi_header = "| instance | expert cost | surrogate cost | gap |\n|---|---|---|---|"
+        pi_header = "| instance | expert cost | policy cost | gap |\n|---|---|---|---|"
         pi_rows = join(
             (
                 "| $i | $(format_cost(session2_per_instance.expert_cost[i])) | " *
-                "$(format_cost(session2_per_instance.surrogate_cost[i])) | " *
+                "$(format_cost(session2_per_instance.policy_cost[i])) | " *
                 "$(format_pct(session2_per_instance.gap_percent[i])) |" for
                 i in eachindex(session2_per_instance.gap_percent)
             ),
@@ -1500,27 +1496,25 @@ end
 # ╔═╡ d5f3c1c4-43fc-46d1-a8bc-5a3747a0826f
 if session2_speedup !== missing
     if !isfinite(session2_speedup.speedup) || session2_speedup.speedup <= 0
-        keep_working(md"The speedup ratio should be a positive, finite number (expert time divided by surrogate time).")
+        keep_working(md"The speedup ratio should be a positive, finite number (expert time divided by policy time).")
     else
         Markdown.parse(
-            "Surrogate speedup over the expert: **$(round(session2_speedup.speedup; digits=1))x**, " *
+            "Policy speedup over the expert: **$(round(session2_speedup.speedup; digits=1))x**, " *
             "full cost gap: **$(round(session2_speedup.full_cost_gap_percent; digits=2)) %**. " *
-            "The surrogate's timed prediction excludes feature computation, which still needs sampled delay scenarios and per-arc slack quantiles, so it is not entirely free in the way this number alone suggests.",
+            "The policy's timed prediction excludes feature computation, which still needs sampled delay scenarios and per-arc slack quantiles, so it is not entirely free in the way this number alone suggests.",
         )
     end
 elseif !session2_ready
-    md"*Generate the fresh test set and train the surrogate above to see the speedup and gap.*"
-elseif session2_table === nothing
-    still_missing(md"Implement `objective_value` first (Section 1), the speedup and gap need it.")
+    md"*Generate the fresh test set and train the policy above to see the speedup and gap.*"
 else
-    still_missing(md"Implement `speedup_and_gap` above, then this will show the speedup and gap.")
+    still_missing(md"Implement `objective_value` first (Section 2.1), the speedup and gap need it.")
 end
 
 # ╔═╡ a03f4dcb-c3d8-4705-a009-4eb33610b0b0
 !session2_ready ?
-md"*Generate the fresh test set and train the surrogate above to see the quality vs runtime chart.*" :
+md"*Generate the fresh test set and train the policy above to see the quality vs runtime chart.*" :
 session2_table === nothing ?
-md"*Status: waiting on the exercise.* Implement `objective_value` first (Section 1), the quality vs runtime chart needs it." :
+md"*Status: waiting on the exercise.* Implement `objective_value` first (Section 2.1), the quality vs runtime chart needs it." :
 plot_quality_runtime(session2_table.method, session2_table.full_cost, session2_table.runtime_seconds)
 
 # ╔═╡ 55462688-f5b1-4363-b1a4-0acf0007720b
@@ -1536,72 +1530,74 @@ session2_oos =
         end
         (;
             expert_cost=mean(r.expert_cost for r in results),
-            surrogate_cost=mean(r.surrogate_cost for r in results),
+            policy_cost=mean(r.policy_cost for r in results),
             gap_percent=mean(r.gap_percent for r in results),
         )
     end
 
 # ╔═╡ cd353de6-ee87-41c8-8711-3e3e60956291
 session2_oos === missing ?
-md"*Generate the fresh test set and train the surrogate above to see the out-of-sample comparison.*" :
+md"*Generate the fresh test set and train the policy above to see the out-of-sample comparison.*" :
 Markdown.parse(
-    "Out of sample (30 fresh delay draws per test instance, never seen by either the expert or the surrogate): " *
-    "expert full cost $(format_cost(session2_oos.expert_cost)), surrogate full cost $(format_cost(session2_oos.surrogate_cost)), " *
-    "surrogate gap **$(format_pct(session2_oos.gap_percent))**. " *
+    "Out of sample (30 fresh delay draws per test instance, never seen by either the expert or the policy): " *
+    "expert full cost $(format_cost(session2_oos.expert_cost)), policy full cost $(format_cost(session2_oos.policy_cost)), " *
+    "policy gap **$(format_pct(session2_oos.gap_percent))**. " *
     (ismissing(session2_oos.gap_percent) ?
-     "*Status: waiting on the exercise.* Implement `objective_value` first (Section 1), the out-of-sample gap needs it. " :
+     "*Status: waiting on the exercise.* Implement `objective_value` first (Section 2.1), the out-of-sample gap needs it. " :
      "") *
     "This number is the fair one, neither decision has an information advantage on the scenarios it is scored on.",
 )
 
 # ╔═╡ d0c8e5b5-9a2f-4684-8061-02f9ca86b8e7
 !session2_ready ?
-md"*Generate the fresh test set and train the surrogate above to see the route comparison.*" :
+md"*Generate the fresh test set and train the policy above to see the route comparison.*" :
 let
     s = test_data[session2_idx]
-    surrogate_routes = surrogate_routes_for(s, train_bundle.policy)
+    policy_routes = policy_routes_for(s, train_bundle.policy)
     plot_gantt(
         s.instance,
         s.extra.routes;
         root_delays=reduce(vcat, (reshape(ξ.departure .+ ξ.arrival, 1, :) for ξ in s.extra.scenarios)),
         delay_cost_function=bench.delay_cost_function,
-        comparison_routes=surrogate_routes,
+        comparison_routes=policy_routes,
         title="Expert (stochastic OR)",
-        comparison_label="Surrogate (DFL)",
+        comparison_label="Policy (DFL)",
     )
 end
 
 # ╔═╡ e7263d34-4953-47a7-a0b6-19ad6000ed6d
-session2_agreement =
+session2_arc_match =
     !session2_ready ? missing :
     let
         s = test_data[session2_idx]
         θ = train_bundle.policy.statistical_model(s.x)
-        surrogate_agreement(θ, s.y, maximizer, s.instance)
+        arc_match_rate(θ, s.y, maximizer, s.instance)
     end
-
-# ╔═╡ 43452f4a-6e26-4c5f-b1c8-1b806a830b25
-session2_agreement === missing ?
-md"*Generate the fresh test set and train the surrogate above to see the arc selection comparison.*" :
-let
-    s = test_data[session2_idx]
-    plot_binary_agreement(
-        s.y[1:(s.instance.nb_interior_arcs)],
-        session2_agreement.ŷ;
-        title="test instance #$(session2_idx), agreement $(round(100 * session2_agreement.agreement; digits=1)) %",
-    )
-end
 
 # ╔═╡ 6c2018e1-2a9f-405e-914f-f74ff3a64ab4
 if !session2_ready
-    md"*Generate the fresh test set and train the surrogate above first.*"
-elseif ismissing(session2_agreement)
+    md"*Generate the fresh test set and train the policy above first.*"
+elseif ismissing(session2_arc_match)
     still_missing()
-elseif length(session2_agreement.ŷ) != test_data[session2_idx].instance.nb_interior_arcs ||
-       !(0 <= session2_agreement.agreement <= 1)
-    keep_working(md"`ŷ` should have one entry per interior arc, and `agreement` should be a fraction between 0 and 1.")
+elseif length(session2_arc_match.ŷ) != test_data[session2_idx].instance.nb_interior_arcs ||
+       !(0 <= session2_arc_match.match_rate <= 1)
+    keep_working(md"`ŷ` should have one entry per interior arc, and `match_rate` should be a fraction between 0 and 1.")
 else
     correct()
+end
+
+# ╔═╡ 43452f4a-6e26-4c5f-b1c8-1b806a830b25
+!session2_ready ?
+md"*Generate the fresh test set and train the policy above to see the arc selection comparison.*" :
+session2_arc_match === missing ?
+md"*Fill in the `arc_match_rate` exercise above to see the arc selection comparison.*" :
+let
+    s = test_data[session2_idx]
+    plot_arc_match(
+        s.y[1:(s.instance.nb_interior_arcs)],
+        session2_arc_match.ŷ;
+        title="Arcs chosen by the expert and by the policy, test instance #$(session2_idx), match rate $(round(100 * session2_arc_match.match_rate; digits=1)) %",
+    )
 end
 
 # ╔═╡ 8730a999-4b02-4eb3-9e3e-878a05dabecc
@@ -1613,7 +1609,7 @@ plot_slack_quantiles(
 
 # ╔═╡ a8eb7ae6-a5e2-4399-8ecd-56fe653fa4b5
 try
-    warm_bench = StochasticTailAssignmentBenchmark(; nb_legs=12, nb_scenarios=3)
+    warm_bench = StochasticTailAssignmentBenchmark(; nb_legs=15, nb_scenarios=3)
     warm_saa = SampleAverageApproximation(warm_bench, 3)
     warm_data = DFLB.generate_dataset(warm_saa, 1; target_policy=expert_target_policy, seed=1)
     if !isempty(warm_data)
@@ -1630,7 +1626,7 @@ try
             epochs=1,
         )
     end
-    "JIT warm-up done (12 legs, 3 scenarios, 1 epoch)."
+    "JIT warm-up done (15 legs, 3 scenarios, 1 epoch)."
 catch caught_error
     "JIT warm-up skipped (" * sprint(showerror, caught_error) * "), the first real run below will absorb that one-time JIT cost instead."
 end
@@ -1638,9 +1634,12 @@ end
 # ╔═╡ Cell order:
 # ╠═5e9a2000-a1b2-4c3d-8e9f-000000000001
 # ╠═5e9a2000-a1b2-4c3d-8e9f-000000000002
+# ╟─70782f52-da3a-40c1-a190-0951f2acc2e6
+# ╟─ebaaf352-a190-4015-a413-1f9d0e0ba562
 # ╟─3e1088c9-3990-4947-a8dd-cc7bd1e0d374
 # ╟─7dae61cc-9ce2-4319-96ca-1b91fce6c752
-# ╠═564cb970-9ec4-4a8e-9f2f-7df7d71547d0
+# ╟─2cfa9472-6f74-4cf6-bf11-db48bd6897af
+# ╟─5627d991-8700-48d9-a920-15e517303424
 # ╟─8e38e69f-579b-4969-9f88-47fd28705c2e
 # ╠═fbf14a46-1fe9-441f-8ec8-d67f8647c92f
 # ╠═43e28775-c9b3-4919-947d-e7f228a74e7a
@@ -1670,6 +1669,7 @@ end
 # ╟─52311ed7-a07b-45f8-93c8-a15e69548399
 # ╟─afab3069-b909-466f-8f3b-5eaeb20333fc
 # ╟─9edb2355-846f-4e26-91e5-10cd6c9432e2
+# ╟─2adfcdd8-67d5-4d0b-a40c-ddde46bbcf00
 # ╟─2ac77c30-f39b-4370-9868-88a207a1af0b
 # ╠═c09f83bc-a8fe-4399-8ae7-9d254bf9b731
 # ╠═d050236e-e869-4195-9628-f1d24e24cc83
@@ -1734,6 +1734,7 @@ end
 # ╟─642963eb-6bb3-4c6e-a7f2-0dfcd228d12b
 # ╠═55a4c6de-0873-461f-a57f-16572782e7fa
 # ╟─fc435c33-5591-4fb2-b90d-d0f807b64090
+# ╟─c6affb5d-1e0c-4faa-b23f-c926f7e40124
 # ╟─04a46f0d-62e0-46bf-884d-abbf02280113
 # ╟─46484b09-fbb4-43ec-b765-81847383f4cf
 # ╠═6a1f2b3c-8d4e-4f5a-9b6c-7d8e9f0a1b2c
@@ -1742,9 +1743,6 @@ end
 # ╟─251fdd64-1fc9-42f4-8e63-f0595e48af7a
 # ╠═258652e8-6624-4c2a-a446-f705d3e07639
 # ╟─0ce675f0-34d1-4b6b-8520-8b3e8373fb63
-# ╟─8eda63fe-701b-4b22-8d07-05bd9dadea74
-# ╠═994d7f21-3472-4a31-9ad8-5b77ac17e77f
-# ╟─9245bd07-4761-49ed-8ec2-01f05bc61927
 # ╠═205b19d7-f4db-4d91-9e5f-8c3cd79c5f40
 # ╟─d5f3c1c4-43fc-46d1-a8bc-5a3747a0826f
 # ╟─a03f4dcb-c3d8-4705-a009-4eb33610b0b0
@@ -1752,6 +1750,7 @@ end
 # ╟─1a23c62b-3f4b-4c06-b933-d5c1a2b899cc
 # ╠═55462688-f5b1-4363-b1a4-0acf0007720b
 # ╟─cd353de6-ee87-41c8-8711-3e3e60956291
+# ╟─1ff34be6-d12b-4d07-b05e-aedf3c70e646
 # ╟─de459fab-2f3c-4c71-b830-536b3339ca40
 # ╠═8730a999-4b02-4eb3-9e3e-878a05dabecc
 # ╟─92d0c429-a893-4688-a3d5-0f4c2be188ab
@@ -1763,11 +1762,12 @@ end
 # ╠═e7263d34-4953-47a7-a0b6-19ad6000ed6d
 # ╟─6c2018e1-2a9f-405e-914f-f74ff3a64ab4
 # ╠═43452f4a-6e26-4c5f-b1c8-1b806a830b25
+# ╟─908083ff-fbad-42f2-ba21-6d39b6a0109f
 # ╟─b815dc98-485c-4f00-96f6-a3675632b9d0
 # ╟─8d6ddc95-d241-4e08-8d1c-d4ba38abff8b
-# ╠═e46c11eb-8102-4f7b-9e2c-d6895b9b4113
-# ╠═05434146-9f04-45d5-b4fd-cfb82d7f0312
-# ╠═ca8004e3-d8c7-45cc-bb03-e39c7c9000f1
+# ╟─e46c11eb-8102-4f7b-9e2c-d6895b9b4113
+# ╟─05434146-9f04-45d5-b4fd-cfb82d7f0312
+# ╟─ca8004e3-d8c7-45cc-bb03-e39c7c9000f1
 # ╟─a8eb7ae6-a5e2-4399-8ecd-56fe653fa4b5
 # ╟─4de274b1-2a31-43aa-99ed-2002850c301d
 # ╟─1c05f7be-5b88-4488-aa75-677598f81aee
